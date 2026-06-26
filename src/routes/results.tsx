@@ -1,5 +1,6 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import {
   ArrowLeft,
   Leaf,
@@ -11,9 +12,11 @@ import {
   CheckCircle2,
   Sparkles,
   ArrowRight,
+  AlertTriangle,
 } from "lucide-react";
 import heroPlate from "@/assets/hero-plate.jpg";
 import { Reveal } from "@/components/Reveal";
+import { analyzeMeal, type MealAnalysis } from "@/lib/analyze-meal.functions";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
@@ -35,44 +38,109 @@ export const Route = createFileRoute("/results")({
   component: ResultsPage,
 });
 
-const detected = ["Dal", "Rice", "Paneer", "Salad"];
+type NutRow = {
+  key: string;
+  value: string;
+  unit: string;
+  emoji: string;
+  Icon: typeof Flame;
+  tone: "primary" | "accent";
+};
 
-const nutrition = [
-  { key: "Calories", value: "512", unit: "kcal", emoji: "🔥", Icon: Flame, tone: "primary" as const },
-  { key: "Protein", value: "28", unit: "g", emoji: "💪", Icon: Dumbbell, tone: "accent" as const },
-  { key: "Carbs", value: "52", unit: "g", emoji: "🥖", Icon: Wheat, tone: "primary" as const },
-  { key: "Fat", value: "16", unit: "g", emoji: "🥑", Icon: Droplet, tone: "accent" as const },
-  { key: "Fiber", value: "8", unit: "g", emoji: "🌾", Icon: Sprout, tone: "primary" as const },
-];
+function buildRows(a: MealAnalysis): NutRow[] {
+  const fmt = (n: number) =>
+    Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, "");
+  return [
+    { key: "Calories", value: fmt(a.calories), unit: "kcal", emoji: "🔥", Icon: Flame, tone: "primary" },
+    { key: "Protein", value: fmt(a.protein), unit: "g", emoji: "💪", Icon: Dumbbell, tone: "accent" },
+    { key: "Carbs", value: fmt(a.carbs), unit: "g", emoji: "🥖", Icon: Wheat, tone: "primary" },
+    { key: "Fat", value: fmt(a.fat), unit: "g", emoji: "🥑", Icon: Droplet, tone: "accent" },
+    { key: "Fiber", value: fmt(a.fiber), unit: "g", emoji: "🌾", Icon: Sprout, tone: "primary" },
+  ];
+}
 
 function ResultsPage() {
+  const navigate = useNavigate();
+  const analyze = useServerFn(analyzeMeal);
+
+  const [image, setImage] = useState<string | null>(null);
+  const [result, setResult] = useState<MealAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
-  const [score, setScore] = useState(0);
-  const target = 8.9;
+  const [error, setError] = useState<string | null>(null);
+  const [animatedScore, setAnimatedScore] = useState(0);
 
+  // Load image + cached result from sessionStorage and run analysis if needed.
   useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 900);
-    return () => clearTimeout(t);
-  }, []);
+    const img = sessionStorage.getItem("plateiq:image");
+    if (!img) {
+      navigate({ to: "/upload" });
+      return;
+    }
+    setImage(img);
 
+    const cached = sessionStorage.getItem("plateiq:result");
+    if (cached) {
+      try {
+        setResult(JSON.parse(cached) as MealAnalysis);
+        setLoading(false);
+        return;
+      } catch {
+        // fall through to re-analyze
+      }
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await analyze({ data: { imageDataUrl: img } });
+        if (cancelled) return;
+        sessionStorage.setItem("plateiq:result", JSON.stringify(data));
+        setResult(data);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Could not analyse this meal.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [analyze, navigate]);
+
+  // Animate health score in once result is ready.
   useEffect(() => {
-    if (loading) return;
+    if (!result) return;
+    const target = result.healthScore;
     let raf = 0;
     const start = performance.now();
     const dur = 1100;
     const tick = (now: number) => {
       const p = Math.min(1, (now - start) / dur);
       const eased = 1 - Math.pow(1 - p, 3);
-      setScore(parseFloat((eased * target).toFixed(1)));
+      setAnimatedScore(parseFloat((eased * target).toFixed(1)));
       if (p < 1) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [loading]);
+  }, [result]);
+
+  const rows = useMemo(() => (result ? buildRows(result) : []), [result]);
 
   if (loading) return <LoadingState />;
+  if (error)
+    return (
+      <ErrorState
+        message={error}
+        onRetry={() => {
+          sessionStorage.removeItem("plateiq:result");
+          location.reload();
+        }}
+      />
+    );
+  if (!result) return null;
 
-  const pct = (score / 10) * 100;
+  const pct = (animatedScore / 10) * 100;
   const circumference = 2 * Math.PI * 52;
   const dash = (pct / 100) * circumference;
 
@@ -116,7 +184,7 @@ function ResultsPage() {
             <Reveal>
               <div className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
                 <img
-                  src={heroPlate}
+                  src={image ?? heroPlate}
                   alt="Your analyzed meal"
                   className="aspect-square w-full object-cover animate-fade-in"
                 />
@@ -127,18 +195,20 @@ function ResultsPage() {
               <article className="rounded-3xl border border-border bg-card p-6 shadow-soft">
                 <div className="flex items-center justify-between">
                   <h2 className="font-display text-lg font-semibold">Detected items</h2>
-                  <span className="text-xs text-muted-foreground">{detected.length} found</span>
+                  <span className="text-xs text-muted-foreground">
+                    {result.foodItems.length} found
+                  </span>
                 </div>
                 <ul className="mt-4 space-y-2">
-                  {detected.map((d, i) => (
+                  {result.foodItems.map((d, i) => (
                     <li
-                      key={d}
+                      key={`${d}-${i}`}
                       style={{ animationDelay: `${i * 80}ms` }}
                       className="flex items-center justify-between rounded-2xl bg-secondary/60 px-4 py-3 text-sm animate-fade-in"
                     >
                       <span className="flex items-center gap-2.5">
                         <CheckCircle2 className="h-4 w-4 text-primary" />
-                        <span className="font-medium">{d}</span>
+                        <span className="font-medium capitalize">{d}</span>
                       </span>
                       <span className="text-xs text-muted-foreground">identified</span>
                     </li>
@@ -150,7 +220,6 @@ function ResultsPage() {
 
           {/* RIGHT */}
           <div className="space-y-6 lg:col-span-7">
-            {/* Nutrition cards */}
             <Reveal>
               <section className="rounded-3xl border border-border bg-card p-6 shadow-soft">
                 <div className="flex items-center justify-between">
@@ -158,7 +227,7 @@ function ResultsPage() {
                   <span className="text-xs text-muted-foreground">per serving</span>
                 </div>
                 <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {nutrition.map((n, i) => (
+                  {rows.map((n, i) => (
                     <div
                       key={n.key}
                       style={{ animationDelay: `${i * 70}ms` }}
@@ -191,7 +260,6 @@ function ResultsPage() {
               </section>
             </Reveal>
 
-            {/* Health score */}
             <Reveal delay={80}>
               <section className="flex flex-col items-center gap-6 rounded-3xl border border-border bg-gradient-to-br from-card to-secondary/60 p-8 shadow-soft sm:flex-row sm:gap-8">
                 <div className="relative h-36 w-36 shrink-0">
@@ -216,7 +284,7 @@ function ResultsPage() {
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <span className="font-display text-3xl font-semibold">
-                      {score.toFixed(1)}
+                      {animatedScore.toFixed(1)}
                     </span>
                     <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
                       / 10
@@ -227,16 +295,16 @@ function ResultsPage() {
                   <p className="text-sm font-medium uppercase tracking-[0.18em] text-accent">
                     Health score
                   </p>
-                  <h3 className="mt-1 font-display text-2xl font-semibold">Excellent meal</h3>
+                  <h3 className="mt-1 font-display text-2xl font-semibold">
+                    {scoreLabel(result.healthScore)}
+                  </h3>
                   <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                    Well-balanced macros and great protein content. A small bump in fibre
-                    would push this into the perfect zone.
+                    Based on macro balance, fibre, and overall meal composition.
                   </p>
                 </div>
               </section>
             </Reveal>
 
-            {/* Mom's Wisdom */}
             <Reveal delay={120}>
               <section className="relative overflow-hidden rounded-3xl border border-border bg-gradient-to-br from-leaf-soft/60 via-card to-zest-soft/40 p-7 shadow-soft">
                 <div
@@ -248,13 +316,11 @@ function ResultsPage() {
                   <h3 className="font-display text-xl font-semibold">Mom's Wisdom</h3>
                 </div>
                 <p className="relative mt-3 text-base leading-relaxed text-foreground/85">
-                  "Your meal is rich in protein but slightly low in fibre. Adding cucumber,
-                  salad or curd would make it more balanced."
+                  “{result.momsWisdom}”
                 </p>
               </section>
             </Reveal>
 
-            {/* Healthy Alternative */}
             <Reveal delay={160}>
               <section className="rounded-3xl border border-border bg-card p-7 shadow-soft">
                 <div className="flex items-center justify-between">
@@ -268,8 +334,10 @@ function ResultsPage() {
                     <p className="text-xs uppercase tracking-wide text-muted-foreground">
                       Instead of
                     </p>
-                    <p className="mt-2 text-3xl">🥤</p>
-                    <p className="mt-1 font-display text-lg font-semibold">Coke</p>
+                    <p className="mt-2 text-3xl">{result.healthyAlternative.instead.emoji}</p>
+                    <p className="mt-1 font-display text-lg font-semibold capitalize">
+                      {result.healthyAlternative.instead.name}
+                    </p>
                   </div>
                   <div className="flex justify-center">
                     <span className="grid h-10 w-10 place-items-center rounded-full bg-primary text-primary-foreground shadow-glow">
@@ -278,8 +346,10 @@ function ResultsPage() {
                   </div>
                   <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5 text-center">
                     <p className="text-xs uppercase tracking-wide text-primary">Try</p>
-                    <p className="mt-2 text-3xl">🥛</p>
-                    <p className="mt-1 font-display text-lg font-semibold">Buttermilk</p>
+                    <p className="mt-2 text-3xl">{result.healthyAlternative.tryThis.emoji}</p>
+                    <p className="mt-1 font-display text-lg font-semibold capitalize">
+                      {result.healthyAlternative.tryThis.name}
+                    </p>
                   </div>
                 </div>
               </section>
@@ -287,11 +357,14 @@ function ResultsPage() {
           </div>
         </div>
 
-        {/* CTA */}
         <Reveal delay={120}>
           <div className="mt-12 flex flex-col items-center">
             <Link
               to="/upload"
+              onClick={() => {
+                sessionStorage.removeItem("plateiq:image");
+                sessionStorage.removeItem("plateiq:result");
+              }}
               className="group inline-flex items-center gap-2 rounded-full bg-primary px-8 py-5 text-base font-medium text-primary-foreground shadow-glow transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.99]"
             >
               <Sparkles className="h-4 w-4 transition-transform group-hover:rotate-12" />
@@ -305,6 +378,13 @@ function ResultsPage() {
       </main>
     </div>
   );
+}
+
+function scoreLabel(score: number) {
+  if (score >= 8.5) return "Excellent meal";
+  if (score >= 7) return "Solid choice";
+  if (score >= 5) return "Could be better";
+  return "Needs balancing";
 }
 
 function LoadingState() {
@@ -325,6 +405,36 @@ function LoadingState() {
         </p>
         <div className="mt-6 h-1.5 w-56 overflow-hidden rounded-full bg-secondary">
           <div className="h-full w-1/3 animate-[slide-in-right_1.2s_ease-in-out_infinite] rounded-full bg-primary" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="grid min-h-screen place-items-center bg-background px-6 text-center">
+      <div className="flex max-w-md flex-col items-center">
+        <span className="grid h-14 w-14 place-items-center rounded-full bg-destructive/10 text-destructive">
+          <AlertTriangle className="h-6 w-6" />
+        </span>
+        <h2 className="mt-6 font-display text-2xl font-semibold">
+          We couldn't analyse that meal
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground shadow-glow transition hover:-translate-y-0.5"
+          >
+            Try again
+          </button>
+          <Link
+            to="/upload"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-3 text-sm font-medium shadow-soft transition hover:-translate-y-0.5 hover:bg-secondary"
+          >
+            Upload a different photo
+          </Link>
         </div>
       </div>
     </div>
