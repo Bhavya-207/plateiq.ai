@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import {
   ArrowLeft,
@@ -226,6 +226,7 @@ function UploadPage() {
           <button
             type="button"
             disabled={!preview}
+            onClick={() => navigate({ to: "/results" })}
             className="group inline-flex w-full max-w-md items-center justify-center gap-2 rounded-full bg-primary px-8 py-5 text-base font-medium text-primary-foreground shadow-glow transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
           >
             <Sparkles className="h-4 w-4 transition-transform group-hover:rotate-12" />
