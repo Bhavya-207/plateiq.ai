@@ -34,6 +34,7 @@ const MAX_BYTES = 10 * 1024 * 1024;
 const ALLOWED = ["image/jpeg", "image/jpg", "image/png"];
 
 function UploadPage() {
+  const navigate = useNavigate();
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
