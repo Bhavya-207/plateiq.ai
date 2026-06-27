@@ -46,33 +46,37 @@ Estimate sensibly when exact values are unknown. Never include keys outside this
 export const analyzeMeal = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => InputSchema.parse(data))
   .handler(async ({ data }): Promise<MealAnalysis> => {
-    const apiKey = process.env.LOVABLE_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("LOVABLE_API_KEY is not configured.");
+      throw new Error("GEMINI_API_KEY is not configured.");
     }
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    // Split "data:image/jpeg;base64,XXXX" into mime + base64 payload.
+    const match = data.imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) throw new Error("Invalid image data URL.");
+    const [, mimeType, base64Data] = match;
+
+    const model = "gemini-2.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Lovable-API-Key": apiKey,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [
           {
             role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Analyse this meal photo and return the JSON described.",
-              },
-              { type: "image_url", image_url: { url: data.imageDataUrl } },
+            parts: [
+              { text: "Analyse this meal photo and return the JSON described." },
+              { inlineData: { mimeType, data: base64Data } },
             ],
           },
         ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.4,
+        },
       }),
     });
 
@@ -81,27 +85,33 @@ export const analyzeMeal = createServerFn({ method: "POST" })
       if (res.status === 429) {
         throw new Error("Rate limit reached. Please try again in a moment.");
       }
-      if (res.status === 402) {
-        throw new Error("AI credits exhausted. Please add credits to continue.");
+      if (res.status === 401 || res.status === 403) {
+        throw new Error("Invalid or unauthorised GEMINI_API_KEY.");
       }
-      throw new Error(`AI analysis failed (${res.status}). ${body.slice(0, 200)}`);
+      throw new Error(`Gemini analysis failed (${res.status}). ${body.slice(0, 300)}`);
     }
 
     const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+      promptFeedback?: { blockReason?: string };
     };
-    const raw = json.choices?.[0]?.message?.content ?? "";
-    if (!raw) throw new Error("Empty response from AI.");
+
+    if (json.promptFeedback?.blockReason) {
+      throw new Error(`Gemini blocked the request: ${json.promptFeedback.blockReason}`);
+    }
+
+    const raw = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    if (!raw) throw new Error("Empty response from Gemini.");
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // Try to extract a JSON object from the text.
       const m = raw.match(/\{[\s\S]*\}/);
-      if (!m) throw new Error("AI returned non-JSON output.");
+      if (!m) throw new Error("Gemini returned non-JSON output.");
       parsed = JSON.parse(m[0]);
     }
 
     return AnalysisSchema.parse(parsed);
   });
+
