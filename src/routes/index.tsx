@@ -125,12 +125,6 @@ function Landing() {
           <a href="#why" className="transition hover:text-foreground">Why PlateIQ</a>
           <a href="#features" className="transition hover:text-foreground">Features</a>
         </nav>
-        <a
-          href="#upload"
-          className="hidden rounded-full border border-border bg-card px-4 py-2 text-sm font-medium shadow-soft transition hover:-translate-y-0.5 hover:bg-secondary md:inline-block"
-        >
-          Sign in
-        </a>
       </header>
 
       {/* Hero */}
